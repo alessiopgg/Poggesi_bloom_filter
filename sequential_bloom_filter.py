@@ -2,6 +2,7 @@ from bloom_interface import BloomFilterInterface
 import mmh3
 from bitarray import bitarray
 
+
 class SequentialBloomFilter(BloomFilterInterface):
     def __init__(self, size: int = 1000, hash_count: int = 3):
         """
