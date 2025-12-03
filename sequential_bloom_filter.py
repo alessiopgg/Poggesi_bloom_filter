@@ -1,4 +1,4 @@
-# sequential_bloom_filter.py (versione estesa)
+# sequential_bloom_filter.py
 
 from bloom_interface import BloomFilterInterface
 from bitarray import bitarray
@@ -20,85 +20,77 @@ class SequentialBloomFilter(BloomFilterInterface):
         return [mmh3.hash(item, seed) % self.size for seed in range(self.hash_count)]
 
     def add(self, item: str) -> None:
-        """Aggiunge un elemento al filtro, impostando a 1 i bit corrispondenti."""
+        """Aggiunge un elemento al filtro."""
         for index in self._hashes(item):
             self.bit_array[index] = 1
 
     def might_contain(self, item: str) -> bool:
-        """
-        Ritorna True se l'elemento potrebbe essere nel set.
-        Questo è il metodo 'core' richiesto dall'interfaccia.
-        """
-        if not item:
-            return False
+        """True se l'elemento è potenzialmente presente (metodo interfaccia)."""
+        if not item: return False
         return all(self.bit_array[index] for index in self._hashes(item))
 
-        # --- METODO UNIFICATO (Comodo) ---
     def contains(self, items: Union[str, Sequence[str]]) -> Union[bool, List[bool]]:
         """
-        Wrapper intelligente:
-        - Se passi una stringa -> chiama might_contain (ritorna bool)
-        - Se passi una lista -> chiama might_contain per ogni elemento (ritorna List[bool])
+        Metodo smart: accetta sia stringa singola che lista di stringhe.
         """
         if isinstance(items, str):
             return self.might_contain(items)
-
-        # List comprehension che riusa la logica di base
         return [self.might_contain(i) for i in items]
+
     def clear(self) -> None:
-        """Resetta il filtro (tutti i bit a 0)."""
+        """Resetta il filtro."""
         self.bit_array.setall(0)
 
-    def build(self, members_path: str) -> int:
+    # --- METODO BUILD UNIFICATO (RISOLVE IL TUO ERRORE) ---
+    def build(self, source: Union[str, Path, Iterable[Union[str, Path]]]) -> int:
         """
-        Legge il file 'members_path' e inizializza il filtro
-        aggiungendo tutti gli elementi (uno per riga).
-        Ritorna quanti elementi sono stati inseriti.
+        Carica elementi nel filtro.
+        Accetta:
+         - Un singolo percorso (str o Path) -> Carica quel file.
+         - Una lista di percorsi (Iterable) -> Carica tutti i file nella lista.
+        Ritorna: Il numero totale di elementi aggiunti.
         """
+
+        # 1. Se è una LISTA (o iterabile), usiamo la ricorsione
+        # Controllo che non sia str/Path, ma sia iterabile
+        if not isinstance(source, (str, Path)) and isinstance(source, Iterable):
+            total = 0
+            for single_path in source:
+                total += self.build(single_path)
+            return total
+
+        # 2. Se è un SINGOLO FILE (str o Path)
+        path = Path(source)
+        if not path.exists():
+            print(f"Attenzione: File {path} non trovato.")
+            return 0
+
         count = 0
-        path = Path(members_path)
         with path.open("r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 item = line.strip()
-                if not item:
-                    continue
-                self.add(item)
-                count += 1
+                if item:
+                    self.add(item)
+                    count += 1
         return count
 
-    # NEW: build da più file (sequenziale)
-    def build_from_paths(self, paths: Iterable[Path]) -> int:
-        total = 0
-        for p in paths:
-            total += self.build(str(p))
-        return total
-
-    # NEW: verifica membership su 1+ file (sequenziale)
+    # Manteniamo verify_from_paths separato per chiarezza nel main
     def verify_from_paths(self, paths: Iterable[Path]) -> List[bool]:
-        """Verifica elementi da più file usando il metodo contains."""
         results: List[bool] = []
         for p in paths:
-            if not Path(p).exists():
+            path_obj = Path(p)
+            if not path_obj.exists():
                 continue
-            with Path(p).open("r", encoding="utf-8", errors="ignore") as f:
+            with path_obj.open("r", encoding="utf-8", errors="ignore") as f:
                 lines = [line.strip() for line in f if line.strip()]
-                # Qui contains ritornerà una List[bool]
-                batch_result = self.contains(lines)
-                if isinstance(batch_result, list):
-                    results.extend(batch_result)
+                # Sfruttiamo il contains smart
+                batch_res = self.contains(lines)
+                if isinstance(batch_res, list):
+                    results.extend(batch_res)
         return results
 
 if __name__ == "__main__":
-    # Esempio rapido
-    MEMBERS_PATH = "data/processed/members.txt"
-    size = 1920000
-    hashes = 70
-    bf = SequentialBloomFilter(size=size, hash_count=hashes)
-    n = bf.build(MEMBERS_PATH)
-    print(f"\nFiltro costruito con {n} elementi.")
-    print(f"Dimensione array: {size}, numero hash: {hashes}")
-    test_items = ["anna", "gioele32", "qualcosa_inventato"]
-    print("\nRisultati dei test:")
-    for item in test_items:
-        result = bf.contains(item)
-        print(f" - {item}: {'Forse presente' if result else 'Assente'}")
+    # Test rapido
+    bf = SequentialBloomFilter(size=100, hash_count=3)
+    # Test lista file (simulata)
+    print("Test build lista vuota:", bf.build([]))
