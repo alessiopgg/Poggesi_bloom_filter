@@ -75,90 +75,59 @@ class HybridBloomFilter(BloomFilterInterface):
 
     async def build_async(self, paths: Iterable[Union[str, Path]], chunk_size: int = 100_000,
                           max_workers: int = None) -> int:
-
         loop = asyncio.get_running_loop()
         total = 0
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             for p in paths:
-
                 path = Path(p)
-                if not path.exists():
-                    continue
+                if not path.exists(): continue
 
-                # ----------------------------------------------------
-                # 1. Lettura file in un thread (non blocca event loop)
-                # ----------------------------------------------------
+                # Lettura (thread)
                 text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="ignore")
-
-                # Rimuove righe vuote + strip
                 lines = [s for s in (line.strip() for line in text.splitlines()) if s]
-                if not lines:
-                    continue
-
+                if not lines: continue
                 total += len(lines)
 
-                # ----------------------------------------------------
-                # 2. Submit dei task CPU-bound ai processi
-                # ----------------------------------------------------
-                futures = [loop.run_in_executor(executor, _worker_build_partial, lines[i:i + chunk_size], self.size,
-                                                self.hash_count)
-                           for i in range(0, len(lines), chunk_size)
-                           ]
+                # Calcolo parallelo (processi)
+                tasks = [
+                    loop.run_in_executor(executor, _worker_build_partial, lines[i:i + chunk_size], self.size,
+                                         self.hash_count)
+                    for i in range(0, len(lines), chunk_size)
+                ]
 
-                # ----------------------------------------------------
-                # 3. Raccolta dei risultati con as_completed
-                #    (i risultati arrivano uno alla volta)
-                # ----------------------------------------------------
-                for f in asyncio.as_completed(futures):
-                    partial_bytes = await f
-
-                    # Converti in bitarray
+                # Aggregazione bitwise (OR)
+                for partial_bytes in await asyncio.gather(*tasks):
                     partial_ba = bitarray()
                     partial_ba.frombytes(partial_bytes)
-
-                    # Tronca se eccede
-                    if len(partial_ba) > self.size:
-                        partial_ba = partial_ba[:self.size]
-
-                    # OR bitwise con il Bloom Filter principale
+                    if len(partial_ba) > self.size: partial_ba = partial_ba[:self.size]
                     self.bit_array |= partial_ba
 
         return total
 
+
     async def verify_async(self, paths: Iterable[Union[str, Path]], chunk_size: int = 50_000,
                            max_workers: int = None) -> List[bool]:
-
         loop = asyncio.get_running_loop()
         results = []
-
-        # Serializzazione una volta sola (ottimo)
-        ba_bytes = self.bit_array.tobytes()
+        ba_bytes = self.bit_array.tobytes()  # Serializza una volta sola
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             for p in paths:
-
                 path = Path(p)
-                if not path.exists():
-                    continue
+                if not path.exists(): continue
 
-                # Lettura file su thread
                 text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="ignore")
-
                 lines = [s for s in (line.strip() for line in text.splitlines()) if s]
-                if not lines:
-                    continue
+                if not lines: continue
 
-                # Submit dei task CPU-bound
-                futures = [
+                tasks = [
                     loop.run_in_executor(executor, _worker_verify, lines[i:i + chunk_size], self.size, self.hash_count,
                                          ba_bytes)
                     for i in range(0, len(lines), chunk_size)
                 ]
 
-                # Raccolta progressiva dei risultati
-                for f in asyncio.as_completed(futures):
-                    chunk_res = await f
+                for chunk_res in await asyncio.gather(*tasks):
                     results.extend(chunk_res)
 
         return results

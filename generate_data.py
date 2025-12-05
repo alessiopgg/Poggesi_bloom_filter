@@ -9,7 +9,7 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 
 # Dimensioni totali del dataset (Righe)
-DATASET_SIZES = [50_000, 100_000, 500_000, 1_000_000, 2_000_000, 5_000_000]
+DATASET_SIZES = [2_000_000, 5_000_000, 10_000_000, 20_000_000]
 
 # In quanti file spezzare il carico?
 SPLIT_COUNTS = [1, 2, 4, 8, 16]
