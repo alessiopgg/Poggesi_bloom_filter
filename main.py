@@ -1,6 +1,6 @@
-# main_iso_final.py
-# Benchmark Scientifico Completo: workers × chunks × split × size
-# Include: warmup, wall-clock + CPU time, min/max/std, system info.
+# main_final.py
+# Benchmark finale e stabile per Sequential vs Hybrid Bloom Filter
+# Include warmup, misure multiple, workers × chunk × split × size
 
 import time
 import math
@@ -8,38 +8,33 @@ import asyncio
 import csv
 import os
 import gc
-import statistics
-import platform
 from pathlib import Path
 from sequential_bloom_filter import SequentialBloomFilter
 from hybrid_bloom_filter import HybridBloomFilter
 
 
-# ============================================================
-# CONFIGURAZIONE
-# ============================================================
+# ===========================================================
+# CONFIGURAZIONE GLOBALE
+# ===========================================================
 
 BASE_DIR = Path("bench_data")
 
 DATASET_SIZES = [2_000_000, 5_000_000, 10_000_000, 20_000_000]
-SPLIT_COUNTS = [1, 2, 4, 8, 16]
+SPLIT_COUNTS = [1, 4, 16]
 
-NUM_ROUNDS = 10        # ripetizioni misurate
-WARMUP = 2             # primi run ignorati
-SPLIT_FACTOR = 4
+WORKER_LIST = [1, 4, 8, 16]
+CHUNK_SIZES = ["auto", 20000, 50000]
+
+WARMUP = 1
+NUM_ROUNDS = 3
+
 DESIRED_FPR = 0.01
-
-CSV_OUT = "results_final.csv"
-SYSTEM_INFO_FILE = "system_info.txt"
-
-WORKER_CANDIDATES = [1, 2, 4, 8, 16, 32]
-
-CHUNK_SIZES = ["auto", 5000, 10000, 20000, 50000, 100000]
+CSV_OUT = "results_final_1.csv"
 
 
-# ============================================================
-# PARAMETRI OTTIMALI BLOOM FILTER
-# ============================================================
+# ===========================================================
+# FUNZIONI DI SUPPORTO
+# ===========================================================
 
 def _get_optimal_params(n: int, p: float):
     if n == 0:
@@ -50,145 +45,114 @@ def _get_optimal_params(n: int, p: float):
     return m, k
 
 
-def _dynamic_chunk(total_items: int, factor: int) -> int:
+def _dynamic_chunk(total_items: int):
     cpu = os.cpu_count() or 1
-    chunk = math.ceil(total_items / (cpu * factor))
+    chunk = total_items // (cpu * 4)
     return max(5000, chunk)
 
 
-# ============================================================
-# RACCOLTA INFO SISTEMA
-# ============================================================
-
-def write_system_info():
-    with open(SYSTEM_INFO_FILE, "w") as f:
+def save_system_info():
+    """Salva informazioni sull'hardware per la relazione."""
+    import platform
+    with open("system_info.txt", "w") as f:
         f.write("=== SYSTEM INFO ===\n")
-        f.write(f"OS: {platform.system()} {platform.release()}\n")
-        f.write(f"Python version: {platform.python_version()}\n\n")
-
-        f.write("--- CPU ---\n")
-        f.write(f"Cores (logical): {os.cpu_count()}\n")
-        f.write(f"Processor: {platform.processor()}\n\n")
-
-        try:
-            import psutil
-            ram = round(psutil.virtual_memory().total / (1024**3), 2)
-            f.write(f"RAM: {ram} GB\n")
-        except:
-            f.write("RAM: psutil non installato\n")
-
-    print(f"Saved system info → {SYSTEM_INFO_FILE}")
+        f.write(f"CPU COUNT: {os.cpu_count()}\n")
+        f.write(f"OS: {platform.platform()}\n")
+        f.write(f"Python: {platform.python_version()}\n")
+        f.write(f"Processor: {platform.processor()}\n")
+    print("Saved system info → system_info.txt")
 
 
-# ============================================================
-# BENCHMARK SCIENTIFICO
-# ============================================================
+# ===========================================================
+# BENCHMARK
+# ===========================================================
 
 def run_benchmark():
 
-    write_system_info()
+    save_system_info()
 
     print(f"\n--- BENCHMARK COMPLETO ({NUM_ROUNDS} rounds, {WARMUP} warmup) ---")
     print(f"Output → {CSV_OUT}\n")
 
     if not BASE_DIR.exists():
-        print("ERRORE: genera prima i dataset!")
+        print("ERRORE: dataset non trovato. Genera i dati prima.")
         return
 
     cpu = os.cpu_count() or 1
-    max_workers_allowed = cpu * 2
-    worker_list = [w for w in WORKER_CANDIDATES if w <= max_workers_allowed]
-
     print(f"CPU = {cpu}")
-    print(f"Testing WORKERS = {worker_list}")
+    print(f"Testing WORKERS = {WORKER_LIST}")
     print(f"Testing CHUNK SIZES = {CHUNK_SIZES}\n")
 
-    # ====================================================
     # CSV HEADER
-    # ====================================================
-
     fieldnames = [
         "size", "split", "workers", "chunk",
-
-        # Sequenziale
-        "seq_build_mean", "seq_build_min", "seq_build_max", "seq_build_std",
-        "seq_verify_mean", "seq_verify_min", "seq_verify_max", "seq_verify_std",
-        "seq_total_mean",
-
-        # Ibrido
-        "hyb_build_mean", "hyb_build_min", "hyb_build_max", "hyb_build_std",
-        "hyb_verify_mean", "hyb_verify_min", "hyb_verify_max", "hyb_verify_std",
-        "hyb_total_mean",
-
-        # CPU times
-        "seq_cpu_mean", "hyb_cpu_mean",
-
-        # Speedup
-        "speedup",
-
-        # Winner
-        "winner"
+        "seq_build", "seq_verify", "seq_total",
+        "hyb_build", "hyb_verify", "hyb_total",
+        "speedup", "winner"
     ]
 
-    with open(CSV_OUT, "w", newline="") as csv_f:
-        writer = csv.DictWriter(csv_f, fieldnames=fieldnames)
+    with open(CSV_OUT, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
-        # ====================================================
-        # MAIN TEST LOOPS
-        # ====================================================
-
+        # ======================================================
+        # CICLO PRINCIPALE
+        # ======================================================
         for size in DATASET_SIZES:
 
-            print(f"\n=== SIZE = {size} ===")
+            print(f"\n=== SIZE = {size} ===\n")
 
             m, k = _get_optimal_params(size, DESIRED_FPR)
-            auto_chunk = _dynamic_chunk(size, SPLIT_FACTOR)
-
-            size_dir = BASE_DIR / f"size_{size}"
+            auto_chunk = _dynamic_chunk(size)
 
             for split in SPLIT_COUNTS:
 
-                split_dir = size_dir / f"split_{split}"
+                split_dir = BASE_DIR / f"size_{size}" / f"split_{split}"
                 train_files = sorted((split_dir / "train").glob("*.txt"))
                 test_files = sorted((split_dir / "test").glob("*.txt"))
 
                 if not train_files:
                     continue
 
-                print(f"\n→ Split={split} ({len(train_files)} train files)")
+                print(f"→ Split={split} ({len(train_files)} train files)")
 
-                for workers in worker_list:
+                for workers in WORKER_LIST:
+
                     print(f"   Workers={workers}")
 
-                    for chunk_choice in CHUNK_SIZES:
+                    for chunk_option in CHUNK_SIZES:
 
-                        chunk = auto_chunk if chunk_choice == "auto" else int(chunk_choice)
+                        chunk = auto_chunk if chunk_option == "auto" else chunk_option
                         print(f"      Chunk={chunk}")
 
-                        # valori misurati
-                        seq_build_times = []
-                        seq_verify_times = []
-                        seq_cpu_times = []
-
-                        hyb_build_times = []
-                        hyb_verify_times = []
-                        hyb_cpu_times = []
+                        sum_seq_b = sum_seq_v = 0.0
+                        sum_hyb_b = sum_hyb_v = 0.0
 
                         # ---------------------------
-                        # ROUNDS con warmup
+                        # WARMUP (non registrato)
                         # ---------------------------
+                        gc.collect()
+                        bf_warm = HybridBloomFilter(size=m, hash_count=k)
+                        try:
+                            asyncio.run(
+                                bf_warm.build_async(
+                                    train_files,
+                                    chunk_size=chunk,
+                                    max_workers=workers,
+                                )
+                            )
+                        except Exception:
+                            pass
 
-                        for r in range(NUM_ROUNDS + WARMUP):
+                        # ---------------------------
+                        # BENCHMARK UFFICIALE
+                        # ---------------------------
+                        for _ in range(NUM_ROUNDS):
 
                             gc.collect()
 
-                            # ========================================
-                            # SEQUENZIALE
-                            # ========================================
+                            # === Sequential ===
                             bf_seq = SequentialBloomFilter(size=m, hash_count=k)
-
-                            t_cpu0 = time.process_time()
 
                             t0 = time.perf_counter()
                             bf_seq.build(train_files)
@@ -198,97 +162,66 @@ def run_benchmark():
                             bf_seq.verify_from_paths(test_files)
                             t_seq_v = time.perf_counter() - t0
 
-                            t_cpu = time.process_time() - t_cpu0
+                            sum_seq_b += t_seq_b
+                            sum_seq_v += t_seq_v
 
-                            if r >= WARMUP:
-                                seq_build_times.append(t_seq_b)
-                                seq_verify_times.append(t_seq_v)
-                                seq_cpu_times.append(t_cpu)
-
-                            # ========================================
-                            # IBRIDO
-                            # ========================================
+                            # === Hybrid ===
                             bf_hyb = HybridBloomFilter(size=m, hash_count=k)
 
-                            t_cpu0 = time.process_time()
-
                             t0 = time.perf_counter()
-                            asyncio.run(bf_hyb.build_async(train_files, chunk_size=chunk, max_workers=workers))
+                            asyncio.run(
+                                bf_hyb.build_async(
+                                    train_files,
+                                    chunk_size=chunk,
+                                    max_workers=workers,
+                                )
+                            )
                             t_hyb_b = time.perf_counter() - t0
 
                             t0 = time.perf_counter()
-                            asyncio.run(bf_hyb.verify_async(test_files, chunk_size=chunk, max_workers=workers))
+                            asyncio.run(
+                                bf_hyb.verify_async(
+                                    test_files,
+                                    chunk_size=chunk,
+                                    max_workers=workers,
+                                )
+                            )
                             t_hyb_v = time.perf_counter() - t0
 
-                            t_cpu = time.process_time() - t_cpu0
+                            sum_hyb_b += t_hyb_b
+                            sum_hyb_v += t_hyb_v
 
-                            if r >= WARMUP:
-                                hyb_build_times.append(t_hyb_b)
-                                hyb_verify_times.append(t_hyb_v)
-                                hyb_cpu_times.append(t_cpu)
+                        # ---------------------------
+                        # CALCOLO MEDIE
+                        # ---------------------------
+                        seq_build = sum_seq_b / NUM_ROUNDS
+                        seq_verify = sum_seq_v / NUM_ROUNDS
+                        seq_total = seq_build + seq_verify
 
-                        # ====================================================
-                        # STATISTICHE
-                        # ====================================================
+                        hyb_build = sum_hyb_b / NUM_ROUNDS
+                        hyb_verify = sum_hyb_v / NUM_ROUNDS
+                        hyb_total = hyb_build + hyb_verify
 
-                        seq_total_mean = statistics.mean(seq_build_times) + statistics.mean(seq_verify_times)
-                        hyb_total_mean = statistics.mean(hyb_build_times) + statistics.mean(hyb_verify_times)
-
-                        speedup = seq_total_mean / hyb_total_mean
-                        winner = "HYB" if hyb_total_mean < seq_total_mean else "SEQ"
-
-                        # ====================================================
-                        # SALVATAGGIO CSV
-                        # ====================================================
+                        speedup = seq_total / hyb_total if hyb_total > 0 else 0
+                        winner = "HYB" if hyb_total < seq_total else "SEQ"
 
                         writer.writerow({
-
                             "size": size,
                             "split": split,
                             "workers": workers,
-                            "chunk": chunk_choice,
-
-                            # Sequenziale
-                            "seq_build_mean": statistics.mean(seq_build_times),
-                            "seq_build_min": min(seq_build_times),
-                            "seq_build_max": max(seq_build_times),
-                            "seq_build_std": statistics.stdev(seq_build_times),
-
-                            "seq_verify_mean": statistics.mean(seq_verify_times),
-                            "seq_verify_min": min(seq_verify_times),
-                            "seq_verify_max": max(seq_verify_times),
-                            "seq_verify_std": statistics.stdev(seq_verify_times),
-
-                            "seq_total_mean": seq_total_mean,
-
-                            # Ibrido
-                            "hyb_build_mean": statistics.mean(hyb_build_times),
-                            "hyb_build_min": min(hyb_build_times),
-                            "hyb_build_max": max(hyb_build_times),
-                            "hyb_build_std": statistics.stdev(hyb_build_times),
-
-                            "hyb_verify_mean": statistics.mean(hyb_verify_times),
-                            "hyb_verify_min": min(hyb_verify_times),
-                            "hyb_verify_max": max(hyb_verify_times),
-                            "hyb_verify_std": statistics.stdev(hyb_verify_times),
-
-                            "hyb_total_mean": hyb_total_mean,
-
-                            # CPU Time
-                            "seq_cpu_mean": statistics.mean(seq_cpu_times),
-                            "hyb_cpu_mean": statistics.mean(hyb_cpu_times),
-
-                            # Speedup
+                            "chunk": chunk_option,
+                            "seq_build": round(seq_build, 4),
+                            "seq_verify": round(seq_verify, 4),
+                            "seq_total": round(seq_total, 4),
+                            "hyb_build": round(hyb_build, 4),
+                            "hyb_verify": round(hyb_verify, 4),
+                            "hyb_total": round(hyb_total, 4),
                             "speedup": round(speedup, 3),
-
-                            "winner": winner
+                            "winner": winner,
                         })
+                        f.flush()
 
-                        csv_f.flush()
-
-    print("\nBenchmark COMPLETATO con successo!")
-    print(f"Risultati salvati in → {CSV_OUT}")
-    print(f"System info salvate in → {SYSTEM_INFO_FILE}")
+    print("\nBenchmark completato.\n")
 
 
 if __name__ == "__main__":
