@@ -24,10 +24,7 @@ Project Structure
   Synthetic dataset generator
 - main.py
   Benchmark runner
-- plot_results.py
-  Plot generation from benchmark results
-- PARALLEL_FINAL_TERM.pdf
-  Final report
+
 
 Requirements
 
@@ -45,9 +42,6 @@ python generate_data.py
 
 python main.py
 
-3. Generate the plots
-
-python plot_results.py
 
 Tested Parameters
 
@@ -56,7 +50,6 @@ Tested Parameters
 - Chunk sizes: auto, 20000, 50000
 - Dataset splits: 1, 4, 16 files
 
-Bloom Filter parameters (bit array size m and number of hash functions k) are computed automatically from a target false positive rate of 1%.
 
 Datasets
 
@@ -80,9 +73,6 @@ The benchmark produces a CSV file containing:
 - speedup
 - best-performing configuration
 
-Generated plots are saved in:
-
-plots/
 
 Notes
 
