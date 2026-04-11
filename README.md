@@ -16,8 +16,6 @@ The goal of the project is to evaluate the impact of a hybrid parallelization st
 
 For more details, see:
 - `PARALLEL_FINAL_TERM.pdf`
-- `elaborati_mid-term_Parallel_Programming.pdf`
-
 ---
 
 ## Repository Structure
