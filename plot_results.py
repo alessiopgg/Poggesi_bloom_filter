@@ -1,16 +1,29 @@
 # plot_results.py
-# Generazione grafici scientifici dai risultati del benchmark
-# Richiede: pandas, matplotlib, seaborn
+# Generazione dei grafici principali per la relazione:
+# 1) Speedup vs workers (end-to-end)
+# 2) Speedup vs workers (compute-only)
+# 3) Confronto speedup end-to-end vs compute-only
+# 4) Execution time vs dataset size (end-to-end)
+# 5) Effect of chunk size on speedup (end-to-end)
 
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
 
-CSV_FILE = "results_final.csv"
-OUT_DIR = "plots"
+CSV_FILE = "results_final_with_compute.csv"
+OUT_DIR = "plots_selected"
 
-sns.set(style="whitegrid")
+# Configurazioni rappresentative
+MAIN_SPLIT = 1
+MAIN_CHUNK = "auto"
+BEST_WORKERS = 8
+
+# Puoi cambiare queste due se vuoi usare 20M invece di 10M
+COMPARISON_SIZE = 10_000_000
+CHUNK_EFFECT_SIZE = 10_000_000
+
+sns.set(style="whitegrid", context="talk")
 
 
 def ensure_out():
@@ -18,150 +31,205 @@ def ensure_out():
         os.makedirs(OUT_DIR)
 
 
-# ============================================================
-# 1. SPEEDUP VS WORKERS
-# ============================================================
-
-def plot_speedup_vs_workers(df):
-    for size in df["size"].unique():
-        subset = df[(df["size"] == size) & (df["chunk"] == "auto")]
-
-        plt.figure(figsize=(9, 6))
-        sns.lineplot(
-            data=subset,
-            x="workers",
-            y="speedup",
-            hue="split",
-            marker="o",
-            palette="tab10"
-        )
-        plt.title(f"Speedup vs Workers (size={size}, chunk=auto)")
-        plt.xlabel("Numero di worker")
-        plt.ylabel("Speedup")
-        plt.savefig(f"{OUT_DIR}/speedup_workers_size{size}.png", dpi=200)
-        plt.close()
+def normalize_chunk_column(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["chunk_str"] = df["chunk"].astype(str)
+    return df
 
 
-# ============================================================
-# 2. HEATMAP WORKER × CHUNK (speedup)
-# ============================================================
+def size_to_label(size: int) -> str:
+    return f"{int(size/1_000_000)}M"
 
-def plot_heatmap(df):
-    for size in df["size"].unique():
-        for split in df["split"].unique():
 
-            subset = df[(df["size"] == size) & (df["split"] == split)]
+def chunk_sort_key(chunk_value: str) -> int:
+    order = {
+        "20000": 0,
+        "50000": 1,
+        "auto": 2
+    }
+    return order.get(str(chunk_value), 99)
 
-            pivot = subset.pivot_table(
-                index="workers",
-                columns="chunk",
-                values="speedup",
-                aggfunc="mean"
-            )
 
-            if pivot.empty:
-                continue
-
-            plt.figure(figsize=(10, 7))
-            sns.heatmap(pivot, annot=True, cmap="viridis")
-            plt.title(f"Heatmap Speedup (size={size}, split={split})")
-            plt.savefig(f"{OUT_DIR}/heatmap_size{size}_split{split}.png", dpi=200)
-            plt.close()
+def format_size_ticks(ax, sizes):
+    ax.set_xticks(sizes)
+    ax.set_xticklabels([size_to_label(s) for s in sizes])
 
 
 # ============================================================
-# 3. TEMPI TOTALI SEQ vs HYB
+# 1. SPEEDUP VS WORKERS (END-TO-END)
 # ============================================================
 
-def plot_total_times(df):
-    for size in df["size"].unique():
-        subset = df[(df["size"] == size) & (df["chunk"] == "auto")]
+def plot_speedup_vs_workers(df: pd.DataFrame):
+    subset = df[
+        (df["split"] == MAIN_SPLIT) &
+        (df["chunk_str"] == str(MAIN_CHUNK))
+        ].copy()
 
-        plt.figure(figsize=(9, 6))
-        sns.lineplot(
-            data=subset,
-            x="workers",
-            y="seq_total_mean",
-            label="Sequenziale",
-            marker="o"
-        )
-        sns.lineplot(
-            data=subset,
-            x="workers",
-            y="hyb_total_mean",
-            label="Ibrido",
-            marker="o"
-        )
-        plt.title(f"Tempo totale seq vs hyb (size={size}, chunk=auto)")
-        plt.xlabel("Numero di worker")
-        plt.ylabel("Tempo totale (s)")
-        plt.legend()
-        plt.savefig(f"{OUT_DIR}/total_times_size{size}.png", dpi=200)
-        plt.close()
+    if subset.empty:
+        return
 
+    subset["size_label"] = subset["size"].apply(size_to_label)
 
-# ============================================================
-# 4. VARIABILITÀ: STANDARD DEVIATION
-# ============================================================
-
-def plot_std_dev(df):
-    for size in df["size"].unique():
-
-        subset = df[(df["size"] == size) & (df["chunk"] == "auto")]
-
-        plt.figure(figsize=(9, 6))
-        sns.lineplot(
-            data=subset,
-            x="workers",
-            y="hyb_build_std",
-            marker="o",
-            label="Ibrido - Build std"
-        )
-        sns.lineplot(
-            data=subset,
-            x="workers",
-            y="seq_build_std",
-            marker="o",
-            label="Sequenziale - Build std"
-        )
-
-        plt.title(f"Variabilità tempi di build (std dev) — size={size}")
-        plt.xlabel("Workers")
-        plt.ylabel("Std Dev (s)")
-        plt.legend()
-        plt.savefig(f"{OUT_DIR}/stddev_size{size}.png", dpi=200)
-        plt.close()
+    plt.figure(figsize=(9, 6))
+    ax = sns.lineplot(
+        data=subset,
+        x="workers",
+        y="speedup",
+        hue="size_label",
+        marker="o"
+    )
+    ax.set_title("Speedup vs Workers")
+    ax.set_xlabel("Number of worker processes")
+    ax.set_ylabel("Speedup")
+    ax.legend(title="Dataset size")
+    plt.tight_layout()
+    plt.savefig(f"{OUT_DIR}/01_speedup_vs_workers_end_to_end.png", dpi=220, bbox_inches="tight")
+    plt.close()
 
 
 # ============================================================
-# 5. STRONG SCALING
+# 2. SPEEDUP VS WORKERS (COMPUTE-ONLY)
 # ============================================================
 
-def plot_strong_scaling(df):
-    for size in df["size"].unique():
-        subset = df[(df["size"] == size) & (df["chunk"] == "auto")]
+def plot_speedup_compute_vs_workers(df: pd.DataFrame):
+    subset = df[
+        (df["split"] == MAIN_SPLIT) &
+        (df["chunk_str"] == str(MAIN_CHUNK))
+        ].copy()
 
-        plt.figure(figsize=(9, 6))
-        sns.lineplot(
-            data=subset,
-            x="workers",
-            y="hyb_total_mean",
-            marker="o",
-            label="Hybrid"
-        )
-        sns.lineplot(
-            data=subset,
-            x="workers",
-            y="seq_total_mean",
-            marker="o",
-            label="Sequential"
-        )
-        plt.title(f"Strong Scaling (size={size}, chunk=auto)")
-        plt.xlabel("Workers")
-        plt.ylabel("Tempo totale (s)")
-        plt.legend()
-        plt.savefig(f"{OUT_DIR}/strong_scaling_size{size}.png", dpi=200)
-        plt.close()
+    if subset.empty:
+        return
+
+    subset["size_label"] = subset["size"].apply(size_to_label)
+
+    plt.figure(figsize=(9, 6))
+    ax = sns.lineplot(
+        data=subset,
+        x="workers",
+        y="speedup_compute",
+        hue="size_label",
+        marker="o"
+    )
+    ax.set_title("Compute-only Speedup vs Workers")
+    ax.set_xlabel("Number of worker processes")
+    ax.set_ylabel("Compute-only speedup")
+    ax.legend(title="Dataset size")
+    plt.tight_layout()
+    plt.savefig(f"{OUT_DIR}/02_speedup_vs_workers_compute_only.png", dpi=220, bbox_inches="tight")
+    plt.close()
+
+
+# ============================================================
+# 3. CONFRONTO SPEEDUP END-TO-END vs COMPUTE-ONLY
+# ============================================================
+
+def plot_speedup_comparison(df: pd.DataFrame):
+    subset = df[
+        (df["size"] == COMPARISON_SIZE) &
+        (df["split"] == MAIN_SPLIT) &
+        (df["chunk_str"] == str(MAIN_CHUNK))
+        ].copy()
+
+    if subset.empty:
+        return
+
+    plt.figure(figsize=(9, 6))
+    ax = sns.lineplot(
+        data=subset,
+        x="workers",
+        y="speedup",
+        marker="o",
+        label="End-to-end speedup"
+    )
+    sns.lineplot(
+        data=subset,
+        x="workers",
+        y="speedup_compute",
+        marker="o",
+        label="Compute-only speedup",
+        ax=ax
+    )
+    ax.set_title(f"End-to-end vs Compute-only Speedup ({size_to_label(COMPARISON_SIZE)})")
+    ax.set_xlabel("Number of worker processes")
+    ax.set_ylabel("Speedup")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(f"{OUT_DIR}/03_speedup_comparison_size_{COMPARISON_SIZE}.png", dpi=220, bbox_inches="tight")
+    plt.close()
+
+
+# ============================================================
+# 4. EXECUTION TIME VS DATASET SIZE (END-TO-END)
+# ============================================================
+
+def plot_execution_time_vs_size(df: pd.DataFrame):
+    subset = df[
+        (df["workers"] == BEST_WORKERS) &
+        (df["split"] == MAIN_SPLIT) &
+        (df["chunk_str"] == str(MAIN_CHUNK))
+        ].copy()
+
+    if subset.empty:
+        return
+
+    subset = subset.sort_values("size")
+    sizes = subset["size"].tolist()
+
+    plt.figure(figsize=(9, 6))
+    ax = sns.lineplot(
+        data=subset,
+        x="size",
+        y="seq_total",
+        marker="o",
+        label="Sequential"
+    )
+    sns.lineplot(
+        data=subset,
+        x="size",
+        y="hyb_total",
+        marker="o",
+        label="Hybrid",
+        ax=ax
+    )
+    ax.set_title("Execution Time vs Dataset Size")
+    ax.set_xlabel("Dataset size")
+    ax.set_ylabel("Total execution time (s)")
+    format_size_ticks(ax, sizes)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(f"{OUT_DIR}/04_execution_time_vs_size_end_to_end.png", dpi=220, bbox_inches="tight")
+    plt.close()
+
+
+# ============================================================
+# 5. EFFECT OF CHUNK SIZE (END-TO-END)
+# ============================================================
+
+def plot_chunk_effect(df: pd.DataFrame):
+    subset = df[
+        (df["size"] == CHUNK_EFFECT_SIZE) &
+        (df["workers"] == BEST_WORKERS) &
+        (df["split"] == MAIN_SPLIT)
+        ].copy()
+
+    if subset.empty:
+        return
+
+    subset["chunk_order"] = subset["chunk_str"].apply(chunk_sort_key)
+    subset = subset.sort_values("chunk_order")
+
+    plt.figure(figsize=(8, 6))
+    ax = sns.barplot(
+        data=subset,
+        x="chunk_str",
+        y="speedup"
+    )
+    ax.set_title(f"Effect of Chunk Size on Speedup ({size_to_label(CHUNK_EFFECT_SIZE)})")
+    ax.set_xlabel("Chunk size")
+    ax.set_ylabel("Speedup")
+    plt.tight_layout()
+    plt.savefig(f"{OUT_DIR}/05_chunk_effect_end_to_end.png", dpi=220, bbox_inches="tight")
+    plt.close()
 
 
 # ============================================================
@@ -171,17 +239,18 @@ def plot_strong_scaling(df):
 def main():
     ensure_out()
 
-    print("Caricamento CSV...")
+    print("Loading CSV...")
     df = pd.read_csv(CSV_FILE)
+    df = normalize_chunk_column(df)
 
-    print("Generazione grafici...")
+    print("Generating selected plots...")
     plot_speedup_vs_workers(df)
-    plot_heatmap(df)
-    plot_total_times(df)
-    plot_std_dev(df)
-    plot_strong_scaling(df)
+    plot_speedup_compute_vs_workers(df)
+    plot_speedup_comparison(df)
+    plot_execution_time_vs_size(df)
+    plot_chunk_effect(df)
 
-    print("Grafici salvati in:", OUT_DIR)
+    print("Plots saved in:", OUT_DIR)
 
 
 if __name__ == "__main__":

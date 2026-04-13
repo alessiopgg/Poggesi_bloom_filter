@@ -1,6 +1,7 @@
 # hybrid_bloom_filter.py
 
 import asyncio
+import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Iterable, Sequence, List, Union
@@ -73,61 +74,121 @@ class HybridBloomFilter(BloomFilterInterface):
 
     # --- Asincroni (I/O + Processi) ---
 
-    async def build_async(self, paths: Iterable[Union[str, Path]], chunk_size: int = 100_000,
-                          max_workers: int = None) -> int:
+    async def build_async(
+            self,
+            paths: Iterable[Union[str, Path]],
+            chunk_size: int = 100_000,
+            max_workers: int = None
+    ) -> int:
+        """
+        Build end-to-end del Bloom Filter.
+
+        Salva inoltre:
+          self.last_build_compute_time
+        che misura solo la parte compute-only della build ibrida,
+        escludendo lettura file e parsing, ma includendo:
+          - chunking
+          - submit ai processi
+          - gather
+          - aggregazione OR finale
+        """
         loop = asyncio.get_running_loop()
         total = 0
+        self.last_build_compute_time = 0.0
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             for p in paths:
                 path = Path(p)
-                if not path.exists(): continue
+                if not path.exists():
+                    continue
 
-                # Lettura (thread)
+                # I/O + parsing (ESCLUSI dalla compute-only)
                 text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="ignore")
                 lines = [s for s in (line.strip() for line in text.splitlines()) if s]
-                if not lines: continue
+                if not lines:
+                    continue
+
                 total += len(lines)
 
-                # Calcolo parallelo (processi)
+                # Blocco compute-only
+                t0 = time.perf_counter()
+
                 tasks = [
-                    loop.run_in_executor(executor, _worker_build_partial, lines[i:i + chunk_size], self.size,
-                                         self.hash_count)
+                    loop.run_in_executor(
+                        executor,
+                        _worker_build_partial,
+                        lines[i:i + chunk_size],
+                        self.size,
+                        self.hash_count
+                    )
                     for i in range(0, len(lines), chunk_size)
                 ]
 
-                # Aggregazione bitwise (OR)
                 for partial_bytes in await asyncio.gather(*tasks):
                     partial_ba = bitarray()
                     partial_ba.frombytes(partial_bytes)
-                    if len(partial_ba) > self.size: partial_ba = partial_ba[:self.size]
+                    if len(partial_ba) > self.size:
+                        partial_ba = partial_ba[:self.size]
                     self.bit_array |= partial_ba
+
+                self.last_build_compute_time += time.perf_counter() - t0
 
         return total
 
 
-    async def verify_async(self, paths: Iterable[Union[str, Path]], chunk_size: int = 50_000,
-                           max_workers: int = None) -> List[bool]:
+    async def verify_async(
+            self,
+            paths: Iterable[Union[str, Path]],
+            chunk_size: int = 50_000,
+            max_workers: int = None
+    ) -> List[bool]:
+        """
+        Verify end-to-end del Bloom Filter.
+
+        Salva inoltre:
+          self.last_verify_compute_time
+        che misura solo la parte compute-only della verify ibrida,
+        escludendo lettura file e parsing, ma includendo:
+          - chunking
+          - submit ai processi
+          - gather
+          - raccolta risultati
+        """
         loop = asyncio.get_running_loop()
         results = []
-        ba_bytes = self.bit_array.tobytes()  # Serializza una volta sola
+        ba_bytes = self.bit_array.tobytes()  # serializzato una volta sola
+        self.last_verify_compute_time = 0.0
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             for p in paths:
                 path = Path(p)
-                if not path.exists(): continue
+                if not path.exists():
+                    continue
 
+                # I/O + parsing (ESCLUSI dalla compute-only)
                 text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="ignore")
                 lines = [s for s in (line.strip() for line in text.splitlines()) if s]
-                if not lines: continue
+                if not lines:
+                    continue
+
+                # Blocco compute-only
+                t0 = time.perf_counter()
 
                 tasks = [
-                    loop.run_in_executor(executor, _worker_verify, lines[i:i + chunk_size], self.size, self.hash_count,
-                                         ba_bytes)
+                    loop.run_in_executor(
+                        executor,
+                        _worker_verify,
+                        lines[i:i + chunk_size],
+                        self.size,
+                        self.hash_count,
+                        ba_bytes
+                    )
                     for i in range(0, len(lines), chunk_size)
                 ]
 
                 for chunk_res in await asyncio.gather(*tasks):
                     results.extend(chunk_res)
+
+                self.last_verify_compute_time += time.perf_counter() - t0
 
         return results
