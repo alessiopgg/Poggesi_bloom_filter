@@ -1,6 +1,3 @@
-# generate_iso.py
-# Genera dataset Train e Test IDENTICI per dimensione, ma frammentati diversamente.
-
 import os
 import random
 import string
